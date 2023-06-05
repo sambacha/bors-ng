@@ -1017,13 +1017,7 @@ defmodule BorsNG.Worker.Batcher do
           code_owners_approved, passed_up_to_date_review} do
       {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
       {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
-      {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
-      {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
-      {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
-      {_, false, _, _, _, _, _} -> {:error, :pr_status}
-      {_, _, false, _, _, _, _} -> :waiting
-      {_, _, _, false, _, _, _} -> :waiting
-      {_, _, _, _, _, _, :insufficient} -> {:error, :insufficient_up_to_date_approvals}
+      {_, _, _, _, _, _, _} -> :waiting
     end
   end
 
