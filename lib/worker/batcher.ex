@@ -718,29 +718,33 @@ defmodule BorsNG.Worker.Batcher do
           {:ok, x}
       end
 
-    push_result =
-      push_with_retry(
-        repo_conn,
-        batch.commit,
-        batch.into_branch
-      )
-
     push_status =
-      case push_result do
-        {:error, :push, 422, raw_error_content} ->
-          cond do
-            String.contains?(raw_error_content, "Update is not a fast forward") ->
-              {:non_ff}
+      if toml.use_squash_merge do
+        {:squash}
+      else
+        push_result =
+          push_with_retry(
+            repo_conn,
+            batch.commit,
+            batch.into_branch
+          )
 
-            true ->
-              {:unknown_failure, 422, raw_error_content}
-          end
+        case push_result do
+          {:error, :push, 422, raw_error_content} ->
+            cond do
+              String.contains?(raw_error_content, "Update is not a fast forward") ->
+                {:non_ff}
 
-        {:error, _, status_code, raw_error_content} ->
-          {:unknown_failure, status_code, raw_error_content}
+              true ->
+                {:unknown_failure, 422, raw_error_content}
+            end
 
-        {:ok, _} ->
-          {:success}
+          {:error, _, status_code, raw_error_content} ->
+            {:unknown_failure, status_code, raw_error_content}
+
+          {:ok, _} ->
+            {:success}
+        end
       end
 
     patches =
@@ -750,16 +754,20 @@ defmodule BorsNG.Worker.Batcher do
 
     case push_status do
       {:success} ->
-        if toml.use_squash_merge do
-          Enum.each(patches, fn patch ->
-            send_message(repo_conn, [patch], {:merged, :squashed, batch.into_branch, statuses})
-            pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
-            pr = %BorsNG.GitHub.Pr{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
-            GitHub.update_pr!(repo_conn, pr)
-          end)
-        else
-          send_message(repo_conn, patches, {:succeeded, statuses})
-        end
+        send_message(repo_conn, patches, {:succeeded, statuses})
+
+        :ok
+
+      {:squash} ->
+        Enum.each(patches, fn patch ->
+          pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+
+          GitHub.squash_merge_branch!(repo_conn, %{
+            pull_number: pr.number,
+            commit_title: patch.title,
+            commit_message: patch.body
+          })
+        end)
 
         :ok
 
