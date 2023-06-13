@@ -189,7 +189,11 @@ defmodule BorsNG.Worker.Batcher.Message do
     end
   end
 
-  def generate_squash_commit_message(pr, commits, user_email, cut_body_after) do
+  def generate_squash_commit_title(pr) do
+    "#{pr.title} (##{pr.number})"
+  end
+
+  def generate_squash_commit_body(pr, commits, user_email, cut_body_after) do
     message_body = cut_body(pr.body, cut_body_after)
 
     co_authors =
@@ -199,7 +203,11 @@ defmodule BorsNG.Worker.Batcher.Message do
       |> Enum.uniq()
       |> Enum.join("\n")
 
-    "#{pr.title} (##{pr.number})\n\n#{message_body}\n\n#{co_authors}\n"
+    "#{message_body}\n\n#{co_authors}\n"
+  end
+
+  def generate_squash_commit_message(pr, commits, user_email, cut_body_after) do
+    "#{generate_squash_commit_title(pr)}\n\n#{generate_squash_commit_body(pr, commits, user_email, cut_body_after)}"
   end
 
   def generate_commit_message(

@@ -762,10 +762,32 @@ defmodule BorsNG.Worker.Batcher do
         Enum.each(patches, fn patch ->
           pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
 
+          {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch.pr_xref)
+
+          {token, _} = repo_conn
+          user = GitHub.get_user_by_login!(token, pr.user.login)
+
+          user_email =
+            if user.email != nil do
+              user.email
+            else
+              Enum.at(commits, 0).author_email
+            end
+
+          commit_title = Batcher.Message.generate_squash_commit_title(pr)
+
+          commit_message =
+            Batcher.Message.generate_squash_commit_body(
+              pr,
+              commits,
+              user_email,
+              toml.cut_body_after
+            )
+
           GitHub.squash_merge_branch!(repo_conn, %{
             pull_number: pr.number,
-            commit_title: patch.title,
-            commit_message: patch.body
+            commit_title: commit_title,
+            commit_message: commit_message
           })
         end)
 
