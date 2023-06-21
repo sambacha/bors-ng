@@ -991,6 +991,12 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp patch_preflight(repo_conn, patch, {:ok, toml}) do
+    # We need to get the latest state of the patch to make sure that we're
+    # checking the most recent commit for statuses.  Otherwise, if the user has
+    # a build failure and pushes new commits to fix the build failure then those
+    # fixes won't get picked up by the preflight check.
+    patch = Repo.get!(Patch, patch.id)
+
     passed_label =
       repo_conn
       |> GitHub.get_labels!(patch.pr_xref)
