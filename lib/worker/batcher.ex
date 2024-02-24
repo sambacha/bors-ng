@@ -718,29 +718,33 @@ defmodule BorsNG.Worker.Batcher do
           {:ok, x}
       end
 
-    push_result =
-      push_with_retry(
-        repo_conn,
-        batch.commit,
-        batch.into_branch
-      )
-
     push_status =
-      case push_result do
-        {:error, :push, 422, raw_error_content} ->
-          cond do
-            String.contains?(raw_error_content, "Update is not a fast forward") ->
-              {:non_ff}
+      if toml.use_squash_merge do
+        {:squash}
+      else
+        push_result =
+          push_with_retry(
+            repo_conn,
+            batch.commit,
+            batch.into_branch
+          )
 
-            true ->
-              {:unknown_failure, 422, raw_error_content}
-          end
+        case push_result do
+          {:error, :push, 422, raw_error_content} ->
+            cond do
+              String.contains?(raw_error_content, "Update is not a fast forward") ->
+                {:non_ff}
 
-        {:error, _, status_code, raw_error_content} ->
-          {:unknown_failure, status_code, raw_error_content}
+              true ->
+                {:unknown_failure, 422, raw_error_content}
+            end
 
-        {:ok, _} ->
-          {:success}
+          {:error, _, status_code, raw_error_content} ->
+            {:unknown_failure, status_code, raw_error_content}
+
+          {:ok, _} ->
+            {:success}
+        end
       end
 
     patches =
@@ -750,16 +754,42 @@ defmodule BorsNG.Worker.Batcher do
 
     case push_status do
       {:success} ->
-        if toml.use_squash_merge do
-          Enum.each(patches, fn patch ->
-            send_message(repo_conn, [patch], {:merged, :squashed, batch.into_branch, statuses})
-            pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
-            pr = %BorsNG.GitHub.Pr{pr | state: :closed, title: "[Merged by Bors] - #{pr.title}"}
-            GitHub.update_pr!(repo_conn, pr)
-          end)
-        else
-          send_message(repo_conn, patches, {:succeeded, statuses})
-        end
+        send_message(repo_conn, patches, {:succeeded, statuses})
+
+        :ok
+
+      {:squash} ->
+        Enum.each(patches, fn patch ->
+          pr = GitHub.get_pr!(repo_conn, patch.pr_xref)
+
+          {:ok, commits} = GitHub.get_pr_commits(repo_conn, patch.pr_xref)
+
+          {token, _} = repo_conn
+          user = GitHub.get_user_by_login!(token, pr.user.login)
+
+          user_email =
+            if user.email != nil do
+              user.email
+            else
+              Enum.at(commits, 0).author_email
+            end
+
+          commit_title = Batcher.Message.generate_squash_commit_title(pr)
+
+          commit_message =
+            Batcher.Message.generate_squash_commit_body(
+              pr,
+              commits,
+              user_email,
+              toml.cut_body_after
+            )
+
+          GitHub.squash_merge_branch!(repo_conn, %{
+            pull_number: pr.number,
+            commit_title: commit_title,
+            commit_message: commit_message
+          })
+        end)
 
         :ok
 
@@ -961,6 +991,12 @@ defmodule BorsNG.Worker.Batcher do
   end
 
   defp patch_preflight(repo_conn, patch, {:ok, toml}) do
+    # We need to get the latest state of the patch to make sure that we're
+    # checking the most recent commit for statuses.  Otherwise, if the user has
+    # a build failure and pushes new commits to fix the build failure then those
+    # fixes won't get picked up by the preflight check.
+    patch = Repo.get!(Patch, patch.id)
+
     passed_label =
       repo_conn
       |> GitHub.get_labels!(patch.pr_xref)
@@ -1010,20 +1046,14 @@ defmodule BorsNG.Worker.Batcher do
       end
 
     Logger.info(
-      "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review}"
+      "Code review status: Label Check #{passed_label} Passed Status: #{no_error_status and no_waiting_status and no_unset_status} Passed Review: #{passed_review} CODEOWNERS: #{code_owners_approved} Passed Up-To-Date Review: #{passed_up_to_date_review} Not Draft: #{!patch.is_draft}"
     )
 
     case {passed_label, no_error_status, no_waiting_status, no_unset_status, passed_review,
-          code_owners_approved, passed_up_to_date_review} do
-      {true, true, true, true, :sufficient, true, :sufficient} -> {:ok, toml.max_batch_size}
-      {false, _, _, _, _, _, _} -> {:error, :blocked_labels}
-      {_, _, _, _, :insufficient, _, _} -> {:error, :insufficient_approvals}
-      {_, _, _, _, :failed, _, _} -> {:error, :blocked_review}
-      {_, _, _, _, _, false, _} -> {:error, :missing_code_owner_approval}
-      {_, false, _, _, _, _, _} -> {:error, :pr_status}
-      {_, _, false, _, _, _, _} -> :waiting
-      {_, _, _, false, _, _, _} -> :waiting
-      {_, _, _, _, _, _, :insufficient} -> {:error, :insufficient_up_to_date_approvals}
+          code_owners_approved, passed_up_to_date_review, !patch.is_draft} do
+      {true, true, true, true, :sufficient, true, :sufficient, true} -> {:ok, toml.max_batch_size}
+      {false, _, _, _, _, _, _, _} -> {:error, :blocked_labels}
+      {_, _, _, _, _, _, _, _} -> :waiting
     end
   end
 

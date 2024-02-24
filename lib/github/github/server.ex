@@ -262,6 +262,47 @@ defmodule BorsNG.GitHub.Server do
   end
 
   def do_handle_call(
+        :squash_merge_branch,
+        repo_conn,
+        {%{
+           pull_number: pull_number,
+           commit_title: commit_title,
+           commit_message: commit_message
+         }}
+      ) do
+    msg = %{merge_method: "squash", commit_title: commit_title}
+
+    msg =
+      if commit_message != nil do
+        Map.put_new(msg, :commit_message, commit_message)
+      else
+        msg
+      end
+
+    repo_conn
+    |> put!("pulls/#{pull_number}/merge", Jason.encode!(msg))
+    |> case do
+      %{body: raw, status: 200} ->
+        data = Jason.decode!(raw)
+
+        res = %{
+          commit: data["sha"]
+        }
+
+        {:ok, res}
+
+      %{status: 409} ->
+        {:ok, :conflict}
+
+      %{status: 204} ->
+        {:ok, :conflict}
+
+      %{body: body, status: status, headers: headers} ->
+        {:error, :squash_merge_branch, status, body, Map.new(headers)["x-github-request-id"]}
+    end
+  end
+
+  def do_handle_call(
         :create_commit,
         repo_conn,
         {%{
@@ -812,6 +853,18 @@ defmodule BorsNG.GitHub.Server do
     "token #{token}"
     |> tesla_client(content_type)
     |> Tesla.post!(URI.encode("/repositories/#{repo_xref}/#{path}"), body)
+  end
+
+  @spec put!(tconn, binary, binary, binary) :: map
+  defp put!(
+         {{:raw, token}, repo_xref},
+         path,
+         body,
+         content_type \\ @content_type
+       ) do
+    "token #{token}"
+    |> tesla_client(content_type)
+    |> Tesla.put!(URI.encode("/repositories/#{repo_xref}/#{path}"), body)
   end
 
   @spec patch!(tconn, binary, binary, binary) :: map

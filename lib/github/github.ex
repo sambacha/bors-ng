@@ -192,6 +192,22 @@ defmodule BorsNG.GitHub do
     commit
   end
 
+  @spec squash_merge_branch!(tconn, %{
+          pull_number: bitstring,
+          commit_title: bitstring,
+          commit_message: bitstring
+        }) :: %{commit: binary} | :conflict
+  def squash_merge_branch!(repo_conn, info) do
+    {:ok, commit} =
+      GenServer.call(
+        BorsNG.GitHub,
+        {:squash_merge_branch, repo_conn, {info}},
+        Confex.fetch_env!(:bors, :api_github_timeout)
+      )
+
+    commit
+  end
+
   @spec synthesize_commit!(tconn, %{
           branch: bitstring,
           tree: bitstring,
